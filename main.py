@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, List, Union
-from fastapi import FastAPI, Request, Depends, Body
+from fastapi import FastAPI, Request, Depends, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import openai
@@ -67,13 +67,12 @@ def check_valid_args(body: RequestBody) -> Any:
 async def complete(body: RequestBody):
     args = check_valid_args(body)
 
-    resp = await openai.ChatCompletion.acreate(**args)
-
     try:
+        resp = await openai.ChatCompletion.acreate(**args)
         return resp.choices[0].message.content
     except:
-        raise Exception(
-            "This model is currently overloaded. Please try again.")
+        raise HTTPException(
+            status_code=500, detail="This model is currently overloaded. Please try again.")
 
 
 @app.post("/stream_complete")
@@ -82,16 +81,15 @@ async def stream_complete(body: RequestBody):
     args["stream"] = True
 
     async def stream_response():
-        async for chunk in await openai.ChatCompletion.acreate(**args):
-            try:
+        try:
+            async for chunk in await openai.ChatCompletion.acreate(**args):
                 if "content" in chunk.choices[0].delta:
                     yield chunk.choices[0].delta.content
                 else:
                     continue
-            except:
-                raise Exception(
-                    "This model is currently overloaded. Please try again.")
-
+        except:
+            raise HTTPException(
+                status_code=500, detail="This model is currently overloaded. Please try again.")
     return StreamingResponse(stream_response(), media_type="text/plain")
 
 
@@ -104,11 +102,11 @@ async def stream_chat(body: RequestBody):
         del args["functions"]
 
     async def stream_response():
-        async for chunk in await openai.ChatCompletion.acreate(**args):
-            try:
+        try:
+            async for chunk in await openai.ChatCompletion.acreate(**args):
                 yield json.dumps(chunk.choices[0].delta) + "\n"
-            except:
-                raise Exception(
-                    "This model is currently overloaded. Please try again.")
+        except:
+            raise HTTPException(
+                status_code=500, detail="This model is currently overloaded. Please try again.")
 
     return StreamingResponse(stream_response(), media_type="text/plain")
