@@ -70,7 +70,8 @@ async def complete(body: RequestBody):
     try:
         resp = await openai.ChatCompletion.acreate(**args)
         return resp.choices[0].message.content
-    except:
+    except Exception as e:
+        print("Exception in /complete", e)
         raise HTTPException(
             status_code=500, detail="This model is currently overloaded. Please try again.")
 
@@ -87,7 +88,8 @@ async def stream_complete(body: RequestBody):
                     yield chunk.choices[0].delta.content
                 else:
                     continue
-        except:
+        except Exception as e:
+            print("Exception in /stream_complete", e)
             raise HTTPException(
                 status_code=500, detail="This model is currently overloaded. Please try again.")
     return StreamingResponse(stream_response(), media_type="text/plain")
@@ -105,7 +107,8 @@ async def stream_chat(body: RequestBody):
         try:
             async for chunk in await openai.ChatCompletion.acreate(**args):
                 yield json.dumps(chunk.choices[0].delta) + "\n"
-        except:
+        except Exception as e:
+            print("Exception in /stream_chat", e)
             raise HTTPException(
                 status_code=500, detail="This model is currently overloaded. Please try again.")
 
