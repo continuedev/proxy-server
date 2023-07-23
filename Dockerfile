@@ -12,7 +12,7 @@ COPY . /app
 
 # Install production dependencies.
 RUN cd /app
-RUN python -m venv env
+RUN python -m venv env  # Comment out when testing locally if env is already created
 RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8080

@@ -1,12 +1,12 @@
 import json
-from typing import Any, Dict, List, Union
-from fastapi import FastAPI, Request, Depends, Body, HTTPException
+from typing import Any, Dict, List
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import openai
 from os import getenv
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 
 load_dotenv()
 app = FastAPI(debug=True)
@@ -19,8 +19,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-OPENAI_API_KEY = getenv("OPENAI_API_KEY")
-openai.api_key = OPENAI_API_KEY
+requests_from_ips: Dict[str, str] = {}
+
+
+async def rate_limit_middleware(request: Request, call_next):
+    ip_address = request.client.host
+    if ip_address not in requests_from_ips:
+        requests_from_ips[ip_address] = 1
+    elif requests_from_ips[ip_address] > MAX_REQUESTS_PER_CLIENT:
+        raise HTTPException(
+            status_code=429, detail="Too many requests from this IP address (limit is {})".format(MAX_REQUESTS_PER_CLIENT))
+    else:
+        requests_from_ips[ip_address] += 1
+    response = await call_next(request)
+    return response
+
+
+# Based on the type, use OpenAI or Azure
+USING_AZURE = False
+AZURE_OPENAI_API_TYPE = getenv("AZURE_OPENAI_API_TYPE", None)
+AZURE_OPENAI_DEPLOYMENT_NAME = getenv("AZURE_OPENAI_DEPLOYMENT_NAME", None)
+if AZURE_OPENAI_API_TYPE is not None and AZURE_OPENAI_API_TYPE == "azure":
+    USING_AZURE = True
+    openai.api_type = AZURE_OPENAI_API_TYPE
+    openai.api_base = getenv("AZURE_OPENAI_API_BASE")
+    openai.api_version = getenv("AZURE_OPENAI_API_VERSION")
+    openai.api_key = getenv("AZURE_OPENAI_API_KEY")
+else:
+    openai.api_key = getenv("OPENAI_API_KEY")
+
 
 requests_from_clients: Dict[str, int] = {}
 
@@ -37,6 +64,14 @@ class RequestBody(BaseModel):
 
     messages: List[Any]
     model: str
+
+    engine: str = None
+
+    @validator("engine", pre=True, always=True)
+    def azure_engine(cls, v):
+        if USING_AZURE:
+            return AZURE_OPENAI_DEPLOYMENT_NAME
+        return v
 
     max_tokens: int = 2048
     temperature: float = 0.5
@@ -58,8 +93,8 @@ def check_valid_args(body: RequestBody) -> Any:
     if body.unique_id not in requests_from_clients:
         requests_from_clients[body.unique_id] = 1
     elif requests_from_clients[body.unique_id] > 1000:
-        raise ValueError(
-            "Too many requests from this client (limit is 1000). You can try using your own API key to get unlimited usage.")
+        raise HTTPException(
+            status_code=429, detail="Too many requests from this client (limit is {})".format(MAX_REQUESTS_PER_CLIENT))
     return body.dict(exclude={"unique_id"}, exclude_none=True)
 
 
