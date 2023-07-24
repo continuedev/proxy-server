@@ -8,6 +8,7 @@ from os import getenv
 from dotenv import load_dotenv
 from pydantic import BaseModel, validator
 from db_setup import get_conn
+from sqlalchemy import text
 
 load_dotenv()
 app = FastAPI(debug=True)
@@ -22,29 +23,26 @@ app.add_middleware(
 
 def query_requests_by_ip(ip_address) -> int:
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT request_count FROM request_counts WHERE ip_address = %s", (ip_address,))
-            row = cur.fetchone()
-            if row:
-                return row[0]
-            else:
-                return 0
+        result = conn.execute(text("SELECT request_count FROM request_counts WHERE ip_address = :ip_address"), {"ip_address": ip_address})
+        row = result.fetchone()
+        if row:
+            return row[0]
+        else:
+            return 0
 
 
 def increment_request_count(ip_address) -> None:
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO request_counts (ip_address, request_count)
-                VALUES (%s, 1)
-                ON CONFLICT (ip_address)
-                DO UPDATE SET request_count = request_counts.request_count + 1
-                """,
-                (ip_address,)
-            )
-            conn.commit()
+        conn.execute(
+            text("""
+            INSERT INTO request_counts (ip_address, request_count)
+            VALUES (:ip_address, 1)
+            ON CONFLICT (ip_address)
+            DO UPDATE SET request_count = request_counts.request_count + 1
+            """),
+            {"ip_address": ip_address}
+        )
+        conn.commit()
 
 @app.middleware("http")
 async def rate_limit_ip_middleware(request: Request, call_next):
