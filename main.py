@@ -7,6 +7,7 @@ import openai
 from os import getenv
 from dotenv import load_dotenv
 from pydantic import BaseModel, validator
+from db_setup import get_conn
 
 load_dotenv()
 app = FastAPI(debug=True)
@@ -19,18 +20,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-requests_from_ips: Dict[str, str] = {}
+def query_requests_by_ip(ip_address) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT request_count FROM request_counts WHERE ip_address = %s", (ip_address,))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+            else:
+                return 0
 
 
-async def rate_limit_middleware(request: Request, call_next):
+def increment_request_count(ip_address) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO request_counts (ip_address, request_count)
+                VALUES (%s, 1)
+                ON CONFLICT (ip_address)
+                DO UPDATE SET request_count = request_counts.request_count + 1
+                """,
+                (ip_address,)
+            )
+            conn.commit()
+
+@app.middleware("http")
+async def rate_limit_ip_middleware(request: Request, call_next):
     ip_address = request.client.host
-    if ip_address not in requests_from_ips:
-        requests_from_ips[ip_address] = 1
-    elif requests_from_ips[ip_address] > MAX_REQUESTS_PER_CLIENT:
+    ip_requests = query_requests_by_ip(ip_address)
+
+    if ip_requests > MAX_REQUESTS_PER_CLIENT:
         raise HTTPException(
             status_code=429, detail="Too many requests from this IP address (limit is {})".format(MAX_REQUESTS_PER_CLIENT))
     else:
-        requests_from_ips[ip_address] += 1
+        increment_request_count(ip_address)
+
+    response = await call_next(request)
+    return response
+
+NO_UNIQUE_ID = "NO_UNIQUE_ID"
+@app.middleware("http")
+async def rate_limit_unique_id_middleware(request: Request, call_next):
+    unique_id = request.headers.get('unique_id', NO_UNIQUE_ID)
+    
+    if unique_id != NO_UNIQUE_ID and query_requests_by_ip(unique_id) > MAX_REQUESTS_PER_CLIENT:
+        raise HTTPException(
+        status_code=429, detail="Too many requests from this unique ID (limit is {})".format(MAX_REQUESTS_PER_CLIENT))
+    else:
+        increment_request_count(unique_id)
+    
     response = await call_next(request)
     return response
 
@@ -48,11 +88,7 @@ if AZURE_OPENAI_API_TYPE is not None and AZURE_OPENAI_API_TYPE == "azure":
 else:
     openai.api_key = getenv("OPENAI_API_KEY")
 
-
-requests_from_clients: Dict[str, int] = {}
-
-MAX_REQUESTS_PER_CLIENT = 1000
-MAX_TOKENS_PER_CLIENT = 10e6
+MAX_REQUESTS_PER_CLIENT = 100
 
 CHAT_MODELS = {
     "gpt-3.5-turbo", "gpt-3.5-turbo-16k", "gpt-4", "gpt-3.5-turbo-0613"
@@ -60,8 +96,6 @@ CHAT_MODELS = {
 
 
 class RequestBody(BaseModel):
-    unique_id: str
-
     messages: List[Any]
     model: str
 
@@ -86,21 +120,16 @@ class RequestBody(BaseModel):
     user: str = None
 
 
-def check_valid_args(body: RequestBody) -> Any:
+def parse_args(body: RequestBody) -> Any:
     if body.model not in CHAT_MODELS:
         raise ValueError(f"Invalid model: {body.model}")
 
-    if body.unique_id not in requests_from_clients:
-        requests_from_clients[body.unique_id] = 1
-    elif requests_from_clients[body.unique_id] > 1000:
-        raise HTTPException(
-            status_code=429, detail="Too many requests from this client (limit is {})".format(MAX_REQUESTS_PER_CLIENT))
-    return body.dict(exclude={"unique_id"}, exclude_none=True)
+    return body.dict(exclude_none=True)
 
 
 @app.post("/complete")
 async def complete(body: RequestBody):
-    args = check_valid_args(body)
+    args = parse_args(body)
 
     try:
         resp = await openai.ChatCompletion.acreate(**args)
@@ -113,7 +142,7 @@ async def complete(body: RequestBody):
 
 @app.post("/stream_complete")
 async def stream_complete(body: RequestBody):
-    args = check_valid_args(body)
+    args = parse_args(body)
     args["stream"] = True
 
     async def stream_response():
@@ -132,7 +161,7 @@ async def stream_complete(body: RequestBody):
 
 @app.post("/stream_chat")
 async def stream_chat(body: RequestBody):
-    args = check_valid_args(body)
+    args = parse_args(body)
     args["stream"] = True
 
     if not args["model"].endswith("0613") and "functions" in args:

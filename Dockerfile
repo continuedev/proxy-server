@@ -12,7 +12,8 @@ COPY . /app
 
 # Install production dependencies.
 RUN cd /app
-RUN python -m venv env  # Comment out when testing locally if env is already created
+RUN python -m venv env
+RUN . env/bin/activate
 RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8080
@@ -22,4 +23,4 @@ EXPOSE 8080
 # For environments with multiple CPU cores, increase the number of workers
 # to be equal to the cores available.
 # Timeout is set to 0 to disable the timeouts of the workers to allow Cloud Run to handle instance scaling.
-CMD . env/bin/activate && uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+CMD python3 db_setup.py && uvicorn main:app --host 0.0.0.0 --port 8080 --reload
