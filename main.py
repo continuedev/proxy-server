@@ -46,14 +46,16 @@ def increment_request_count(ip_address) -> None:
 
 @app.middleware("http")
 async def rate_limit_ip_middleware(request: Request, call_next):
-    ip_address = request.client.host
-    ip_requests = query_requests_by_ip(ip_address)
+    forwarded_header = request.headers.get("X-Forwarded-For")
+    if forwarded_header is not None:
+        ip_address = request.headers.getlist("X-Forwarded-For")[0]
+        ip_requests = query_requests_by_ip(ip_address)
 
-    if ip_requests > MAX_REQUESTS_PER_CLIENT:
-        raise HTTPException(
-            status_code=429, detail="Too many requests from this IP address (limit is {})".format(MAX_REQUESTS_PER_CLIENT))
-    else:
-        increment_request_count(ip_address)
+        if ip_requests > MAX_REQUESTS_PER_CLIENT:
+            raise HTTPException(
+                status_code=429, detail="Too many requests from this IP address (limit is {})".format(MAX_REQUESTS_PER_CLIENT))
+        else:
+            increment_request_count(ip_address)
 
     response = await call_next(request)
     return response
@@ -86,7 +88,7 @@ if AZURE_OPENAI_API_TYPE is not None and AZURE_OPENAI_API_TYPE == "azure":
 else:
     openai.api_key = getenv("OPENAI_API_KEY")
 
-MAX_REQUESTS_PER_CLIENT = 100
+MAX_REQUESTS_PER_CLIENT = 500
 
 CHAT_MODELS = {
     "gpt-3.5-turbo", "gpt-3.5-turbo-16k", "gpt-4", "gpt-3.5-turbo-0613"
