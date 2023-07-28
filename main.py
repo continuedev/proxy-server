@@ -1,8 +1,8 @@
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import openai
 from os import getenv
 from dotenv import load_dotenv
@@ -20,6 +20,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+HARD_REQUESTS_CAP = 200000
+def check_total_requests() -> int:
+    with get_conn() as conn:
+        result = conn.execute(text("SELECT SUM(request_count) FROM request_counts"))
+        row = result.fetchone()
+        if row:
+            return row[0]
+        else:
+            return 0
 
 def query_requests_by_ip(ip_address) -> int:
     with get_conn() as conn:
@@ -44,33 +54,50 @@ def increment_request_count(ip_address) -> None:
         )
         conn.commit()
 
-@app.middleware("http")
-async def rate_limit_ip_middleware(request: Request, call_next):
-    forwarded_header = request.headers.get("X-Forwarded-For")
-    if forwarded_header is not None:
-        ip_address = request.headers.getlist("X-Forwarded-For")[0]
-        ip_requests = query_requests_by_ip(ip_address)
+def get_rate_limit_error(id: str) -> Union[JSONResponse, None]:
+    if id is not None:
+        requests = query_requests_by_ip(id)
 
-        if ip_requests > MAX_REQUESTS_PER_CLIENT:
-            raise HTTPException(
-                status_code=429, detail="Too many requests from this IP address (limit is {})".format(MAX_REQUESTS_PER_CLIENT))
+        if requests > MAX_REQUESTS_PER_CLIENT:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests from this client (limit is {})".format(MAX_REQUESTS_PER_CLIENT)}
+            )
         else:
-            increment_request_count(ip_address)
+            increment_request_count(id)
 
-    response = await call_next(request)
-    return response
+    
+
+    return None
 
 NO_UNIQUE_ID = "NO_UNIQUE_ID"
 @app.middleware("http")
-async def rate_limit_unique_id_middleware(request: Request, call_next):
+async def rate_limit_ip_middleware(request: Request, call_next):
+    # Check if over hard cap
+    total_requests = check_total_requests()
+    if total_requests > HARD_REQUESTS_CAP:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "The Continue server cannot handle any more requests (limit is {})".format(HARD_REQUESTS_CAP)}
+        )
+    
+    response = await call_next(request)
+    return response
+    
+    # Check total requests from IP address
+    forwarded_header = request.headers.get("X-Forwarded-For")
+    if forwarded_header is not None:
+        ip_address = request.headers.getlist("X-Forwarded-For")[0]
+
+        if e := get_rate_limit_error(ip_address):
+            return e
+
+    # Check total requests from unique ID
     unique_id = request.headers.get('unique_id', NO_UNIQUE_ID)
-    
-    if unique_id != NO_UNIQUE_ID and query_requests_by_ip(unique_id) > MAX_REQUESTS_PER_CLIENT:
-        raise HTTPException(
-        status_code=429, detail="Too many requests from this unique ID (limit is {})".format(MAX_REQUESTS_PER_CLIENT))
-    else:
-        increment_request_count(unique_id)
-    
+    if unique_id != NO_UNIQUE_ID:
+        if e := get_rate_limit_error(unique_id):
+            return e
+
     response = await call_next(request)
     return response
 
